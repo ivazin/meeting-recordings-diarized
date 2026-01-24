@@ -85,7 +85,6 @@ WHISPER_MODEL=mlx-community/whisper-large-v3-fp16
 ```
 output/
   ├── my_video/                               # Directory named after input file
-  │   ├── my_video.wav                        # Converted 16kHz mono WAV file
   │   ├── transcript_diarized.txt             # Text grouped by speaker blocks
   │   ├── transcript_with_timestamps.txt      # Line-by-line text with timestamps & speaker IDs
   │   ├── plain_transcript.txt                # Raw transcription text only

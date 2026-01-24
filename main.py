@@ -467,6 +467,11 @@ def main():
                 
         print(f"Completed {input_file.name}")
 
+        # Cleanup intermediate WAV if it's distinct from input
+        if audio_file_to_process != input_file and audio_file_to_process.exists():
+             logger.info(f"Cleaning up converted WAV: {audio_file_to_process.name}")
+             audio_file_to_process.unlink()
+
         # Cleanup to prevent memory leaks
         if 'transcription_result' in locals():
             del transcription_result
