@@ -4,6 +4,7 @@ import logging
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 import datetime
+import gc
 
 import mlx_whisper
 from pyannote.audio import Pipeline
@@ -72,9 +73,9 @@ def transcribe_audio(audio_path: str) -> Dict[str, Any]:
     logger.info(f"Transcription complete. Took {duration:.2f} seconds.")
     return result
 
-def diarize_audio(audio_path: str, hf_token: str) -> Any:
-    """Diarize audio using pyannote.audio."""
-    logger.info("Starting diarization with pyannote.audio...")
+def setup_diarization_pipeline(hf_token: str) -> Any:
+    """Load and configure the pyannote.audio pipeline once."""
+    logger.info("Loading pyannote.audio pipeline...")
     
     try:
         pipeline = Pipeline.from_pretrained(
@@ -86,15 +87,19 @@ def diarize_audio(audio_path: str, hf_token: str) -> Any:
         logger.error("Make sure you have accepted the user agreement on Hugging Face for pyannote/speaker-diarization-3.1")
         raise
 
-    # Send pipeline to GPU (MPS) if available, though pyannote might default to CPU or CUDA
-    # Pyannote support for MPS is experimental/limited, usually runs on CPU on Mac or needs specific setup.
-    # We will try to use standard execution.
+    # Send pipeline to GPU (MPS) if available
     if torch.backends.mps.is_available():
          pipeline.to(torch.device("mps"))
          logger.info("Using MPS for diarization.")
     else:
          logger.info("Using CPU for diarization.")
+         
+    return pipeline
 
+def diarize_audio(audio_path: str, pipeline: Any) -> Any:
+    """Run diarization using the pre-loaded pipeline."""
+    logger.info("Running diarization...")
+    
     # Run diarization
     diarization = pipeline(audio_path)
     logger.info("Diarization complete.")
@@ -167,13 +172,19 @@ def merge_results(transcription: Dict[str, Any], diarization: Any) -> List[Dict[
 from pyannote.core import Segment as pyannote_segment
 
 
+import argparse
+
 def main():
+    parser = argparse.ArgumentParser(description="Transcribe and optionally diarize audio files.")
+    parser.add_argument("--no-diarization", action="store_true", help="Skip speaker diarization step.")
+    args = parser.parse_args()
+
     # 1. Configuration
     root_dir = Path(__file__).parent
     input_dir = root_dir / "input"
     output_base_dir = root_dir / "output"
     env_file = root_dir / ".env"
-    
+        
     # Load environment variables
     load_env_file(env_file)
     
@@ -183,6 +194,14 @@ def main():
         logger.error("You need a token with access to pyannote/speaker-diarization-3.1")
         return
 
+    # Initialize diarization pipeline if needed
+    diarization_pipeline = None
+    if not args.no_diarization:
+        try:
+            diarization_pipeline = setup_diarization_pipeline(hf_token)
+        except Exception:
+            return
+
     if not input_dir.exists():
         logger.error(f"Input directory not found: {input_dir}")
         return
@@ -191,7 +210,7 @@ def main():
     output_base_dir.mkdir(exist_ok=True)
 
     # List of extensions to process
-    valid_extensions = {".mkv", ".mov", ".mp4", ".mp3", ".wav", ".m4a"}
+    valid_extensions = {".mkv", ".mov", ".mp4", ".mp3", ".wav", ".m4a", ".ogg"}
     
     # Iterate over files in input directory
     for input_file in input_dir.iterdir():
@@ -213,6 +232,12 @@ def main():
         # Use name to create folder name (e.g. "my_video.mkv" from "my_video.mkv")
         file_output_dir = output_base_dir / input_file.name # input_file.stem for file name without extension
         file_output_dir.mkdir(exist_ok=True)
+
+        # Check if already processed
+        check_file = file_output_dir / ("plain_transcript.txt" if args.no_diarization else "transcript_diarized.txt")
+        if check_file.exists():
+            logger.info(f"Skipping {input_file.name}: Output file {check_file.name} already exists.")
+            continue
 
         # 2. Convert/Prepare Audio
         audio_file_to_process = input_file
@@ -246,9 +271,35 @@ def main():
             logger.exception(f"Transcription failed for {input_file.name}")
             continue
 
+        # --- WRITE PLAIN TRANSCRIPTS ALWAYS ---
+        plain_txt = file_output_dir / "plain_transcript.txt"
+        plain_ts = file_output_dir / "plain_transcript_with_timestamps.txt"
+        
+        logger.info(f"Writing plain transcripts to {plain_txt} and {plain_ts}")
+        
+        try:
+            with open(plain_txt, "w") as f_ptxt, open(plain_ts, "w") as f_pts:
+                # Write full text
+                f_ptxt.write(transcription_result['text'].strip())
+                
+                # Write text with timestamps
+                for seg in transcription_result['segments']:
+                    start_fmt = format_timestamp(seg['start'])
+                    end_fmt = format_timestamp(seg['end'])
+                    text = seg['text'].strip()
+                    f_pts.write(f"[{start_fmt} - {end_fmt}] {text}\n")
+        except Exception as e:
+             logger.error(f"Failed to write plain transcripts: {e}")
+
+        if args.no_diarization:
+            logger.info("Skipping diarization as requested.")
+            print(f"Completed {input_file.name} (Transcription only)")
+            continue
+
+
         # 4. Diarization
         try:
-            diarization_result = diarize_audio(str(audio_file_to_process), hf_token)
+            diarization_result = diarize_audio(str(audio_file_to_process), diarization_pipeline)
         except Exception as e:
             logger.exception(f"Diarization failed for {input_file.name}")
             continue
@@ -256,11 +307,11 @@ def main():
         # 5. Merging
         final_segments = merge_results(transcription_result, diarization_result)
         
-        # 6. Output
-        output_txt = file_output_dir / "transcript.txt"
+        # 6. Output (Diarized)
+        output_txt = file_output_dir / "transcript_diarized.txt"
         output_ts = file_output_dir / "transcript_with_timestamps.txt"
         
-        logger.info(f"Writing results to {output_txt} and {output_ts}")
+        logger.info(f"Writing diarized results to {output_txt} and {output_ts}")
         
         with open(output_txt, "w") as f_txt, open(output_ts, "w") as f_ts:
             current_speaker = None
@@ -289,6 +340,19 @@ def main():
                 f_txt.write(f"\n\n{current_speaker}: {' '.join(current_block)}")
                 
         print(f"Completed {input_file.name}")
+
+        # Cleanup to prevent memory leaks
+        if 'transcription_result' in locals():
+            del transcription_result
+        if 'diarization_result' in locals():
+            del diarization_result
+        if 'final_segments' in locals():
+            del final_segments
+        
+        # Force garbage collection
+        gc.collect()
+        if torch.backends.mps.is_available():
+            torch.mps.empty_cache()
 
 def convert_to_wav_to_path(input_path: Path, output_path: Path) -> Path:
     """Convert audio/video file to WAV using ffmpeg to specific output path."""
