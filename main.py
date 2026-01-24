@@ -73,6 +73,111 @@ def transcribe_audio(audio_path: str) -> Dict[str, Any]:
     logger.info(f"Transcription complete. Took {duration:.2f} seconds.")
     return result
 
+def transcribe_gigaam(audio_path: str) -> Dict[str, Any]:
+    """Transcribe audio using GigaAM-v3."""
+    logger.info("Starting transcription with GigaAM-v3...")
+    
+    try:
+        # Patch for gigaam compatibility with newer huggingface_hub
+        import huggingface_hub.errors
+        import huggingface_hub.utils
+        if not hasattr(huggingface_hub.errors, "LocalEntryNotFoundError"):
+            huggingface_hub.errors.LocalEntryNotFoundError = huggingface_hub.utils.EntryNotFoundError
+            
+        from gigaam import load_model
+    except ImportError:
+        logger.error("GigaAM library not found. Please install it: pip install gigaam")
+        raise
+        
+    # Load model (assuming v3_ctc for strict ASR matching, or standard loading)
+    # Using "v3_ctc" as it's a common target for robust ASR.
+    # Note: Initialization might take time/download.
+    try:
+        model = load_model("v3_ctc")
+    except Exception as e:
+        logger.error(f"Failed to load GigaAM model: {e}")
+        raise
+
+    # PATCH: GigaAM vad_utils passes a directory to pyannote.audio.Model.from_pretrained,
+    # which pyannote treats as a Repo ID and fails validation.
+    # We patch it to point to the pytorch_model.bin file instead.
+    try:
+        import gigaam.vad_utils
+        import torch
+        from pyannote.audio import Model
+        from torch.torch_version import TorchVersion
+        from pyannote.audio.core.task import Problem, Resolution, Specifications
+        import os
+
+        # Only patch if we haven't already (or just overwrite, it's safer to use a wrapper if we cared about state, but this is simple)
+        # We need access to the original resolver, which is in the module.
+        _original_resolve = gigaam.vad_utils.resolve_local_segmentation_path
+
+        def _patched_load_segmentation_model(model_id: str) -> Model:
+            local_path = _original_resolve(model_id=model_id)
+            
+            # Fix: append pytorch_model.bin if it's a directory
+            if os.path.isdir(local_path):
+                potential_bin = os.path.join(local_path, "pytorch_model.bin")
+                if os.path.exists(potential_bin):
+                    logger.info(f"Patching GigaAM VAD path to: {potential_bin}")
+                    local_path = potential_bin
+            
+            with torch.serialization.safe_globals(
+                [TorchVersion, Problem, Specifications, Resolution]
+            ):
+                return Model.from_pretrained(local_path)
+        
+        gigaam.vad_utils.load_segmentation_model = _patched_load_segmentation_model
+        logger.info("Patched gigaam.vad_utils.load_segmentation_model for local path compatibility.")
+        
+    except Exception as e:
+        logger.warning(f"Failed to patch gigaam.vad_utils: {e}")
+
+    start_time = time.time()
+    
+    # transcribe_longform returns a list of segments/utterances with timestamps
+    # Expected format of return: [{'text': '...', 'start': 0.0, 'end': 1.0}, ...] check docs?
+    # Based on research: returns list of utterances.
+    recognition = model.transcribe_longform(audio_path)
+    
+    end_time = time.time()
+    duration = end_time - start_time
+    logger.info(f"GigaAM Transcription complete. Took {duration:.2f} seconds.")
+    
+    # Convert to Whisper-compatible format
+    full_text = []
+    segments = []
+    
+    # transcribe_longform returns a list of segments/utterances with timestamps 
+    # Format: [{'transcription': 'text', 'boundaries': (start, end)}, ...]
+    
+    for item in recognition:
+        # access attributes safely, but we expect dict based on debug
+        if isinstance(item, dict):
+             text = item.get('transcription', "")
+             boundaries = item.get('boundaries', (0.0, 0.0))
+             start = boundaries[0]
+             end = boundaries[1]
+        else:
+             # Fallback if structure changes (unlikely now)
+             text = getattr(item, 'transcription', "") or getattr(item, 'text', "")
+             start = getattr(item, 'start', 0.0)
+             end = getattr(item, 'end', 0.0)
+        
+        full_text.append(text)
+        segments.append({
+            "start": start,
+            "end": end,
+            "text": text
+        })
+
+        
+    return {
+        "text": " ".join(full_text),
+        "segments": segments
+    }
+
 def setup_diarization_pipeline(hf_token: str) -> Any:
     """Load and configure the pyannote.audio pipeline once."""
     logger.info("Loading pyannote.audio pipeline...")
@@ -176,6 +281,7 @@ import argparse
 
 def main():
     parser = argparse.ArgumentParser(description="Transcribe and optionally diarize audio files.")
+    parser.add_argument("--model", default="whisper", choices=["whisper", "gigaam"], help="Model to use: 'whisper' (default) or 'gigaam'.")
     parser.add_argument("--no-diarization", action="store_true", help="Skip speaker diarization step.")
     args = parser.parse_args()
 
@@ -184,7 +290,9 @@ def main():
     input_dir = root_dir / "input"
     output_base_dir = root_dir / "output"
     env_file = root_dir / ".env"
-        
+    input_dir = Path("/Users/user/Movies/2026-01-19")
+    output_base_dir = input_dir / "transcripts"
+    
     # Load environment variables
     load_env_file(env_file)
     
@@ -266,7 +374,10 @@ def main():
         
         # 3. Transcription
         try:
-            transcription_result = transcribe_audio(str(audio_file_to_process))
+            if args.model == "gigaam":
+                 transcription_result = transcribe_gigaam(str(audio_file_to_process))
+            else:
+                 transcription_result = transcribe_audio(str(audio_file_to_process))
         except Exception as e:
             logger.exception(f"Transcription failed for {input_file.name}")
             continue
