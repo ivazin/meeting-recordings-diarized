@@ -1,8 +1,9 @@
-# Meeting Diarization
+# Meeting Audio Diarization
 
 A Python tool for transcribing and diarizing audio/video files, optimized for **Apple Silicon**.
 
-It converts media files to text with speaker identification (diarization), handling format conversion automatically.
+It converts media files to text with speaker identification (diarization), handling format conversion automatically with local [Whisper](https://openai.com/index/whisper/) and [GigaAM-v3](https://github.com/salute-developers/GigaAM) models. 
+
 
 ## Prerequisites
 
