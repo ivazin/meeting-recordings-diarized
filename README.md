@@ -14,7 +14,11 @@ It converts media files to text with speaker identification (diarization), handl
 
 ## Setup
 
-1.  Clone the repository.
+1.  Clone the repository:
+    ```bash
+    git clone git@github.com:ivazin/meeting-recordings-diarized.git
+    cd meeting-recordings-diarized
+    ```
 2.  Create a `.env` file (or export variables) with your [Hugging Face token](https://huggingface.co/settings/tokens):
     ```bash
     HF_TOKEN=your_token_here
@@ -80,11 +84,12 @@ WHISPER_MODEL=mlx-community/whisper-large-v3-fp16
  
 ```
 output/
-  ├── my_video/
-  │   ├── transcript_diarized.txt         # Speaker-grouped text
-  │   ├── transcript_with_timestamps.txt  # Detailed timestamps
-  │   ├── plain_transcript.txt            # Raw text (no speaker labels)
-  │   └── plain_transcript_with_timestamps.txt
+  ├── my_video/                               # Directory named after input file
+  │   ├── my_video.wav                        # Converted 16kHz mono WAV file
+  │   ├── transcript_diarized.txt             # Text grouped by speaker blocks
+  │   ├── transcript_with_timestamps.txt      # Line-by-line text with timestamps & speaker IDs
+  │   ├── plain_transcript.txt                # Raw transcription text only
+  │   └── plain_transcript_with_timestamps.txt # Raw text with timestamps (no speakers)
   └── interview/
       ├── ...
 ```

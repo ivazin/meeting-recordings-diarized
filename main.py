@@ -6,6 +6,13 @@ from typing import List, Dict, Any, Optional
 import datetime
 import gc
 
+# Configure Hugging Face cache to local models directory
+# This must be done before importing libraries that use HF
+root_dir = Path(__file__).resolve().parent
+models_dir = root_dir / "models"
+models_dir.mkdir(exist_ok=True)
+os.environ["HF_HOME"] = str(models_dir / "huggingface")
+
 import mlx_whisper
 from pyannote.audio import Pipeline
 import torch
@@ -73,7 +80,7 @@ def transcribe_audio(audio_path: str) -> Dict[str, Any]:
     logger.info(f"Transcription complete. Took {duration:.2f} seconds.")
     return result
 
-def transcribe_gigaam(audio_path: str) -> Dict[str, Any]:
+def transcribe_gigaam(audio_path: str, download_root: Optional[str] = None) -> Dict[str, Any]:
     """Transcribe audio using GigaAM-v3."""
     logger.info("Starting transcription with GigaAM-v3...")
     
@@ -91,9 +98,12 @@ def transcribe_gigaam(audio_path: str) -> Dict[str, Any]:
         
     # Load model (assuming v3_ctc for strict ASR matching, or standard loading)
     # Using "v3_ctc" as it's a common target for robust ASR.
-    # Note: Initialization might take time/download.
+    # Check for MPS availability
+    device = "mps" if torch.backends.mps.is_available() else "cpu"
+    logger.info(f"Loading GigaAM model on {device}...")
+    
     try:
-        model = load_model("v3_ctc")
+        model = load_model("v3_ctc", device=device, download_root=download_root)
     except Exception as e:
         logger.error(f"Failed to load GigaAM model: {e}")
         raise
@@ -103,7 +113,7 @@ def transcribe_gigaam(audio_path: str) -> Dict[str, Any]:
     # We patch it to point to the pytorch_model.bin file instead.
     try:
         import gigaam.vad_utils
-        import torch
+
         from pyannote.audio import Model
         from torch.torch_version import TorchVersion
         from pyannote.audio.core.task import Problem, Resolution, Specifications
@@ -120,7 +130,7 @@ def transcribe_gigaam(audio_path: str) -> Dict[str, Any]:
             if os.path.isdir(local_path):
                 potential_bin = os.path.join(local_path, "pytorch_model.bin")
                 if os.path.exists(potential_bin):
-                    logger.info(f"Patching GigaAM VAD path to: {potential_bin}")
+                    logger.debug(f"Patching GigaAM VAD path to: {potential_bin}")
                     local_path = potential_bin
             
             with torch.serialization.safe_globals(
@@ -129,7 +139,7 @@ def transcribe_gigaam(audio_path: str) -> Dict[str, Any]:
                 return Model.from_pretrained(local_path)
         
         gigaam.vad_utils.load_segmentation_model = _patched_load_segmentation_model
-        logger.info("Patched gigaam.vad_utils.load_segmentation_model for local path compatibility.")
+        logger.debug("Patched gigaam.vad_utils.load_segmentation_model for local path compatibility.")
         
     except Exception as e:
         logger.warning(f"Failed to patch gigaam.vad_utils: {e}")
@@ -289,7 +299,12 @@ def main():
     root_dir = Path(__file__).parent
     input_dir = root_dir / "input"
     output_base_dir = root_dir / "output"
+    models_dir = root_dir / "models" # clean this up, use global models_dir? no, keep it local scope for clarity or reuse
     env_file = root_dir / ".env"
+    
+    # Ensure models directory exists
+    models_dir.mkdir(exist_ok=True)
+    
     input_dir = Path("/Users/user/Movies/2026-01-19")
     output_base_dir = input_dir / "transcripts"
     
@@ -375,7 +390,7 @@ def main():
         # 3. Transcription
         try:
             if args.model == "gigaam":
-                 transcription_result = transcribe_gigaam(str(audio_file_to_process))
+                 transcription_result = transcribe_gigaam(str(audio_file_to_process), download_root=str(models_dir / "gigaam"))
             else:
                  transcription_result = transcribe_audio(str(audio_file_to_process))
         except Exception as e:
