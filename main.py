@@ -293,20 +293,27 @@ def main():
     parser = argparse.ArgumentParser(description="Transcribe and optionally diarize audio files.")
     parser.add_argument("--model", default="whisper", choices=["whisper", "gigaam"], help="Model to use: 'whisper' (default) or 'gigaam'.")
     parser.add_argument("--no-diarization", action="store_true", help="Skip speaker diarization step.")
+    parser.add_argument("--input_dir", type=Path, required=True, help="Path to input directory containing audio/video files.")
+    parser.add_argument("--output_dir", type=Path, help="Path to output directory. Defaults to 'transcripts' inside input directory.")
     args = parser.parse_args()
 
     # 1. Configuration
     root_dir = Path(__file__).parent
-    input_dir = root_dir / "input"
-    output_base_dir = root_dir / "output"
+    # input_dir = root_dir / "input"
+    # output_base_dir = root_dir / "output"
     models_dir = root_dir / "models" # clean this up, use global models_dir? no, keep it local scope for clarity or reuse
     env_file = root_dir / ".env"
     
     # Ensure models directory exists
     models_dir.mkdir(exist_ok=True)
     
-    input_dir = Path("/Users/user/Movies/2026-01-19")
-    output_base_dir = input_dir / "transcripts"
+    # input_dir = Path("/Users/user/Movies/2026-01-19")
+
+    input_dir = args.input_dir
+    if args.output_dir:
+        output_base_dir = args.output_dir
+    else:
+        output_base_dir = input_dir / "transcripts"
     
     # Load environment variables
     load_env_file(env_file)
